@@ -181,6 +181,8 @@ Example response:
 - `server:error`  
   Emitted when Kafka/realtime layer is unavailable.
 
+## Demo
+[Demo](https://youtu.be/QT-dy49cC88)
 
 ## Future Improvements
 
