@@ -318,6 +318,11 @@ async function main() {
         ],
       });
     });
+
+    socket.on("disconnect", () => {
+      console.log(`[Socket:${socket.id}]: disconnected`);
+      io.emit("server:user:disconnected", { id: socket.id });
+    });
   });
 
   app.get("/health", (req, res) => {
@@ -330,9 +335,9 @@ async function main() {
     return res.json({
       authenticated: Boolean(user),
       user,
+      locationIntervalMs: Number(process.env.LOCATION_INTERVAL_MS || 10000),
       oidc: {
         configured: Boolean(getClientId() && getIdpUrl()),
-        registerUrl: "/auth/register",
       },
     });
   });

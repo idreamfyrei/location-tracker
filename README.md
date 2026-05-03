@@ -1,194 +1,226 @@
 # Location Tracker
 
 Real-time location sharing app built with Node.js, Express, Socket.IO, and Kafka.
-Users authenticate through an OIDC-compatible Identity Provider (IdP), grant browser geolocation access, and then publish live coordinates that are streamed to all connected clients on a shared Leaflet map.
+Users authenticate through an OIDC identity provider, grant browser geolocation access, and publish live coordinates that stream to all connected clients on a shared Leaflet map.
+
+## Project Overview
+
+Each authenticated user's location is sent through Socket.IO to the Express server, which publishes it to a Kafka topic. A consumer on the same server reads from that topic and broadcasts the update to all connected clients. A separate `data-processor` consumer in its own consumer group reads the same events to simulate database persistence — completely independent of the real-time path.
+
+Anonymous users can see the map and other users' live markers. Only authenticated users can share their own location.
 
 ## Tech Stack
 
-- **Backend:** Node.js (ESM), Express 5
-- **Realtime transport:** Socket.IO
-- **Event streaming:** Kafka (`kafkajs`)
-- **Frontend:** Vanilla HTML/CSS/JS + Leaflet + OpenStreetMap tiles
-- **Auth:** OIDC Authorization Code + PKCE (custom integration)
-- **Infra (local):** Docker Compose (Kafka broker)
+| Layer | Tech |
+|---|---|
+| Backend | Node.js (ESM), Express 5 |
+| Realtime | Socket.IO |
+| Event streaming | Kafka via KafkaJS |
+| Frontend | Vanilla HTML/CSS/JS + Leaflet |
+| Auth | OIDC Authorization Code + PKCE |
+| Infra (local) | Docker Compose (Kafka broker) |
 
 ## File Structure
 
-```text
+```
 location-tracker/
-├── index.js              # Main server, auth flow, session handling, socket + Kafka bridge
-├── kafka-client.js       # Shared Kafka client config
-├── kafka-admin.js        # One-time topic creation script
-├── data-processor.js     # Example consumer (simulates DB insert logs)
+├── index.js              Main server — auth, sessions, socket handler, Kafka producer + consumer
+├── kafka-client.js       Shared Kafka client (reads broker from env)
+├── kafka-admin.js        One-time topic creation script
+├── data-processor.js     Separate Kafka consumer (simulates DB writes)
 ├── public/
-│   └── index.html        # Map UI, auth shell, geolocation + socket client
-├── docker-compose.yml    # Local Kafka service
-├── .env.example          # Example environment variables
+│   └── index.html        Map UI, auth banner, geolocation + socket client
+├── docker-compose.yml    Local Kafka broker
+├── .env.example          All environment variables with defaults
 └── package.json
 ```
 
-## Getting Started
+## Setup Steps
 
-### 1) Prerequisites
+### Prerequisites
 
-- Node.js 18+ (Node 20+ recommended)
+- Node.js 18+
 - pnpm
-- Docker Desktop (or Docker Engine)
+- Docker Desktop
 
-### 2) Install dependencies
+### 1. Install dependencies
 
 ```bash
 pnpm install
 ```
 
-### 3) Configure environment
-
-Create `.env` from `.env.example` and set values:
+### 2. Configure environment
 
 ```bash
 cp .env.example .env
 ```
 
-Recommended local values:
+Edit `.env` with your values (see Environment Variables below).
 
-```env
-PORT=3000
-PUBLIC_BASE_URL=url-after-tunneling/or-localhost
-SESSION_SECRET=replace-with-a-long-random-string
-
-OIDC_ISSUER_URL=https://auth.saumyagrawal.in
-OIDC_CLIENT_ID=client-id
-
-# Optional: pin the redirect URI instead of deriving it from PUBLIC_BASE_URL
-OIDC_REDIRECT_URI=url-after-tunneling(or-localhost)/auth/callback
-
-```
-
-### 4) Start Kafka
+### 3. Start Kafka
 
 ```bash
 docker compose up -d
 ```
 
-### 5) Create Kafka topic
+### 4. Create the Kafka topic
 
 ```bash
 node kafka-admin.js
 ```
 
-### 6) Start the app
+Creates the `location-updates` topic with 2 partitions. Run once.
+
+### 5. Start the app
 
 ```bash
 pnpm start
 ```
 
-Open: [http://localhost:3000](http://localhost:3000)
+Open `http://localhost:3000`.
 
-### Optional: run example background consumer
+### 6. (Optional) Run the database processor
+
+In a separate terminal:
 
 ```bash
 node data-processor.js
 ```
 
-This prints consumed location events as simulated database inserts.
+This is the second Kafka consumer group. It prints `INSERT INTO DB LOCATION` for every location event — simulating what a real DB write consumer would do.
 
+## Environment Variables
 
-## How It Works
+| Variable | Default | Description |
+|---|---|---|
+| `PORT` | `3000` | HTTP server port |
+| `PUBLIC_BASE_URL` | `http://localhost:3000` | Public base URL (used to derive the OIDC redirect URI) |
+| `SESSION_SECRET` | — | Secret for HMAC-signing session cookies. Set a long random string. |
+| `OIDC_ISSUER_URL` | `` | Base URL of your OIDC identity provider |
+| `OIDC_CLIENT_ID` | `location-tracker` | OAuth client ID registered at the IdP |
+| `OIDC_REDIRECT_URI` | derived from `PUBLIC_BASE_URL` | Pin the callback URL if the derived value is wrong |
+| `KAFKA_BROKERS` | `localhost:9092` | Comma-separated Kafka broker addresses |
+| `LOCATION_INTERVAL_MS` | `10000` | How often the browser sends a location update (ms) |
 
-### High-level flow
+## OIDC Auth Setup
 
-1. Browser loads map UI (`public/index.html`).
-2. UI calls `/api/me` to check whether a signed session exists.
-3. If unauthenticated, user is shown login/register links (`/auth/login`, `/auth/register`).
-4. Server builds OIDC authorization URL with PKCE and redirects to IdP.
-5. IdP redirects back to `/auth/callback` with `code` + `state`.
-6. Server exchanges code for tokens, fetches/derives user profile, creates signed cookie session.
-7. Authenticated client connects Socket.IO and starts sending geolocation updates.
-8. Server publishes updates to Kafka topic `location-updates`.
-9. Server consumer reads from Kafka and emits `server:location:update` to all clients.
-10. UI updates local and remote markers on Leaflet map.
+Register a client at your IdP with:
 
-### Architecture diagram
+- **Client ID:** `location-tracker` (or whatever you set in `OIDC_CLIENT_ID`)
+- **Redirect URI:** `https://<your-domain>/auth/callback`
+- **Grant type:** Authorization Code
+- **Scopes:** `openid profile email`
 
-<img width="870" height="216" alt="image" src="https://github.com/user-attachments/assets/121c6165-4e42-43d0-803c-3c16258f1f3d" />
+### Auth flow
 
-### Auth sequence (OIDC + session)
+```
+Browser                   Server                    IdP
+  |                          |                        |
+  |-- GET /api/me ---------->|                        |
+  |<-- { authenticated:false }                        |
+  |                          |                        |
+  |-- GET /auth/login ------->|                        |
+  |                          | generate PKCE verifier  |
+  |                          | store state in memory   |
+  |<-- 302 /authorize?... ---|                        |
+  |                          |                        |
+  |-- GET /authorize --------------------------------->|
+  |<-- 302 /auth/callback?code&state -----------------|
+  |                          |                        |
+  |-- GET /auth/callback ---->|                        |
+  |                          |-- POST /oauth/token --->|
+  |                          |<-- access_token --------|
+  |                          |-- GET /oauth/userinfo ->|
+  |                          |<-- { sub, email, name } |
+  |                          | create signed cookie    |
+  |<-- 302 / + Set-Cookie ---|                        |
+```
 
-<img width="714" height="579" alt="image" src="https://github.com/user-attachments/assets/cfcacd98-b0b6-4b73-b35e-79723377cc06" />
+PKCE ensures the authorization code is useless if intercepted — the code verifier never leaves the server. Sessions are stored in memory with an HMAC-signed HttpOnly cookie.
 
-### Realtime location sequence
+## Socket Event Flow
 
-<img width="685" height="298" alt="image" src="https://github.com/user-attachments/assets/b0105c8c-6a62-4684-83f9-fd30190b1335" />
+```
+Browser                    Server
+  |                           |
+  |-- connect (cookie) ------->|  server reads session cookie → attaches user
+  |                           |
+  |-- user:location:update --->|  { latitude, longitude }
+  |                           |  validates auth → publishes to Kafka
+  |                           |
+  |<-- server:location:update -|  broadcast to ALL connected clients
+  |<-- server:auth:required ---|  if socket has no session
+  |<-- server:error -----------|  if Kafka is not ready
+  |<-- server:user:disconnected|  when any user disconnects
+```
+
+Socket events reference:
+
+| Event | Direction | Payload | Description |
+|---|---|---|---|
+| `user:location:update` | client → server | `{ latitude, longitude }` | Send current position |
+| `server:location:update` | server → client | `{ id, latitude, longitude, user }` | Broadcast position update |
+| `server:user:disconnected` | server → client | `{ id }` | Remove stale marker |
+| `server:auth:required` | server → client | — | Unauthenticated toggle attempt |
+| `server:error` | server → client | `{ message }` | Kafka unavailable |
+
+## Kafka Event Flow
+
+```
+Browser
+  └── socket emit: user:location:update
+        │
+        ▼
+  Express Server
+  └── kafkaProducer.send → topic: location-updates
+        │
+        ▼
+  Kafka broker (location-updates, 2 partitions)
+        │
+        ├── Consumer Group: socket-server-{PORT}
+        │     └── receives message → io.emit server:location:update
+        │           └── all connected browsers update marker
+        │
+        └── Consumer Group: database-processor
+              └── receives same message → logs INSERT INTO DB
+                    └── (independent of real-time path)
+```
+
+### Why two consumer groups?
+
+Kafka delivers every message to **each consumer group independently**. This means:
+
+- The `socket-server` group handles real-time fan-out to clients — fast path, no blocking
+- The `database-processor` group handles persistence — can batch, throttle, or retry without slowing down the socket path
+
+If the DB consumer is slow or crashes, it has no effect on real-time updates. This is why location tracking systems (ride-hailing, delivery apps) use event streams instead of writing to the database on every socket event.
+
+### Why not write to the DB directly from the socket handler?
+
+At scale, thousands of users sending location every 10 seconds = thousands of DB writes per second. Direct writes would either overload the database or require complex connection pooling. Kafka absorbs the burst, and the DB consumer writes at the pace the database can handle.
 
 ## Routes
 
-### Page / static
+| Route | Description |
+|---|---|
+| `GET /` | Serves the map UI |
+| `GET /health` | Health check |
+| `GET /api/me` | Current session user + OIDC config + location interval |
+| `GET /auth/login` | Starts OIDC login flow |
+| `GET /auth/callback` | Handles IdP redirect, creates session |
+| `POST /auth/logout` | Destroys session, clears cookie |
 
-- `GET /`  
-  Serves `public/index.html` via `express.static`.
+`GET /health` returns `{ "status": "ok" }`. Optional routes: `GET /auth/register` starts the IdP signup flow (same pattern as login).
 
-### Health
+## Assumptions and Limitations
 
-- `GET /health`  
-  Returns service status.
-
-Example response:
-
-```json
-{ "status": "ok" }
-```
-
-### Session/auth state
-
-- `GET /api/me`  
-  Returns whether user is authenticated, current user (if any), and OIDC config hints for frontend.
-
-### Authentication
-
-- `GET /auth/login`  
-  Starts OIDC login flow.
-
-- `GET /auth/register`  
-  Starts OIDC signup flow (using configured signup endpoint).
-
-- `GET /auth/callback`  
-  Handles IdP redirect, exchanges authorization code for tokens, resolves user profile, creates session cookie, redirects back.
-
-- `POST /auth/logout`  
-  Clears session and cookie, redirects to `/`.
-
-## Socket Events
-
-### Client -> Server
-
-- `user:location:update`  
-  Payload:
-  - `latitude` (number)
-  - `longitude` (number)
-
-### Server -> Client
-
-- `server:location:update`  
-  Payload includes:
-  - `id` (socket id)
-  - `latitude` (number)
-  - `longitude` (number)
-  - `user` (basic user profile)
-
-- `server:auth:required`  
-  Emitted when an unauthenticated socket tries to share location.
-
-- `server:error`  
-  Emitted when Kafka/realtime layer is unavailable.
+- **Sessions are in-memory** — restarting the server logs everyone out. A production version would use Redis.
+- **No JWT signature verification** — the IdP's access token is trusted to fetch userinfo, but the id_token signature is not verified against the IdP's JWKs endpoint.
+- **Single Kafka broker** — the docker-compose setup runs one broker. Multi-broker setup requires changing `KAFKA_BROKERS`.
+- **No rate limiting on socket events** — a user could flood the server with location updates. Not a concern for the demo but would be needed in production.
+- **Location history is simulated** — `data-processor.js` logs events instead of writing to a real database. The consumer group architecture is correct; only the sink is stubbed.
+- **Geolocation accuracy** depends on the device. For demo purposes, Chrome DevTools Sensors panel can override location coordinates.
 
 ## Demo
 [Demo](https://youtu.be/QT-dy49cC88)
-
-## Future Improvements
-
-- Persist sessions in Redis/DB (currently in-memory `Map`)
-- Add JWT/id_token signature validation against IdP JWKs
-- Add robust input validation/rate limiting on socket events
-- Persist locations to a real database consumer
-- Add automated tests and CI
 
