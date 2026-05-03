@@ -110,53 +110,15 @@ This prints consumed location events as simulated database inserts.
 
 ### Architecture diagram
 
-```mermaid
-flowchart LR
-  U[Browser Client] -->|HTTP| E[Express Server]
-  U <-->|Socket.IO| E
-  E -->|Produce location-updates| K[(Kafka)]
-  K -->|Consume location-updates| E
-  E -->|Emit server:location:update| U
-  E -->|OIDC redirects + token exchange| I[IdP / OIDC Provider]
-```
+<img width="870" height="216" alt="image" src="https://github.com/user-attachments/assets/121c6165-4e42-43d0-803c-3c16258f1f3d" />
 
 ### Auth sequence (OIDC + session)
 
-```mermaid
-sequenceDiagram
-  participant B as Browser
-  participant S as Server (Express)
-  participant I as IdP
-
-  B->>S: GET /api/me
-  S-->>B: { authenticated: false }
-  B->>S: GET /auth/login
-  S-->>B: 302 to IdP /authorize (PKCE)
-  B->>I: Authorization request
-  I-->>B: Redirect /auth/callback?code&state
-  B->>S: GET /auth/callback
-  S->>I: POST /oauth/token
-  I-->>S: tokens
-  S->>I: GET /oauth/userinfo (if access_token)
-  I-->>S: profile
-  S-->>B: Set signed session cookie + redirect /
-```
+<img width="714" height="579" alt="image" src="https://github.com/user-attachments/assets/cfcacd98-b0b6-4b73-b35e-79723377cc06" />
 
 ### Realtime location sequence
 
-```mermaid
-sequenceDiagram
-  participant C1 as Client A
-  participant S as Server
-  participant K as Kafka
-  participant C2 as Client B
-
-  C1->>S: socket emit user:location:update
-  S->>K: produce location-updates
-  K-->>S: consume message
-  S-->>C1: emit server:location:update
-  S-->>C2: emit server:location:update
-```
+<img width="685" height="298" alt="image" src="https://github.com/user-attachments/assets/b0105c8c-6a62-4684-83f9-fd30190b1335" />
 
 ## Routes
 
